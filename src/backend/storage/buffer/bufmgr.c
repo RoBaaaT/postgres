@@ -32,6 +32,7 @@
 
 #include <sys/file.h>
 #include <unistd.h>
+#include <time.h>
 
 #include "access/tableam.h"
 #include "access/xloginsert.h"
@@ -497,6 +498,135 @@ static inline int buffertag_comparator(const BufferTag *a, const BufferTag *b);
 static inline int ckpt_buforder_comparator(const CkptSortItem *a, const CkptSortItem *b);
 static int	ts_ckpt_progress_comparator(Datum a, Datum b, void *arg);
 
+static void PrintBufferPool(void);
+static void PrintTimeStamp(int warmed_up_counter);
+
+FILE* block_trace_fp = NULL;
+int print_frequency = 1000 * 1000;
+int block_trace_flush_frequency = 1000 * 100;
+int warmed_up_period = 1000 * 100;
+int warmed_up_counter = 0;
+int op_count = 1000 * 1000 * 10;
+
+/* -----------------------------------------------------------------
+ *    PrintBufferDescs
+ *
+ *    this function prints all the buffer descriptors, for debugging
+ *    use only.
+ * -----------------------------------------------------------------
+ */
+void PrintBufferPool(void) {
+    int i;
+    volatile BufferDesc *buf = BufferDescriptors;
+    char operation = 'i'; // init
+
+    for (i = 0; i < NBuffers; ++i, ++buf)
+    {
+        char trace_string[128];
+        uint32 buf_state = pg_atomic_read_u32(&buf->state);
+        sprintf(trace_string, "%c %d %d %u %u %u %x %u\n",
+                operation,
+                buf->tag.forkNum,
+                buf->tag.blockNum,
+                buf->tag.rnode.spcNode,
+                buf->tag.rnode.dbNode,
+                buf->tag.rnode.relNode,
+                buf_state & BM_DIRTY,
+                BUF_STATE_GET_REFCOUNT(buf_state));
+
+        // Write out trace string
+        fputs(trace_string, block_trace_fp);
+    }
+
+    // Flush buffer pool state
+    fflush(block_trace_fp);
+}
+
+/* Print Timestamp */
+void PrintTimeStamp(int warmed_up_counter) {
+    time_t timer;
+    char buffer[26];
+    struct tm* tm_info;
+    char trace_string[128];
+    char operation = 't'; // timestamp
+
+    time(&timer);
+    tm_info = localtime(&timer);
+    strftime(buffer, 26, "%Y-%m-%d %H:%M:%S", tm_info);
+
+    sprintf(trace_string, "%c %s %d\n",
+            operation,
+            buffer,
+            warmed_up_counter);
+
+    // Write out trace string
+    fputs(trace_string, block_trace_fp);
+}
+
+/* Trace information */
+void TraceInformationWithBufferPool(char operation,
+                                    ForkNumber forkNum, BlockNumber blockNum,
+                                    Oid spcNode, Oid dbNode, Oid relNode) {
+    char trace_string[128];
+
+    if(block_trace_fp == NULL){
+        block_trace_fp = fopen("trace.txt", "a");
+        PrintTimeStamp(warmed_up_counter);
+    }
+
+    if(rand() % print_frequency == 0){
+        PrintTimeStamp(warmed_up_counter);
+    }
+
+    warmed_up_counter++;
+
+    if(warmed_up_counter < warmed_up_period){
+        return;
+    }
+    else if(warmed_up_counter == warmed_up_period){
+        // WRITE BUFFER POOL STATE
+
+        PrintTimeStamp(warmed_up_counter);
+        PrintBufferPool();
+    }
+    else if(warmed_up_counter <= warmed_up_period + op_count){
+        // WRITE I/O TRACES
+
+        sprintf(trace_string, "%c %d %d %u %u %u\n",
+                operation, forkNum, blockNum, spcNode, dbNode, relNode);
+
+        // Write out trace string
+        fputs(trace_string, block_trace_fp);
+
+        // Flush if needed
+        if(rand() % block_trace_flush_frequency == 0){
+            PrintTimeStamp(warmed_up_counter);
+            fflush(block_trace_fp);
+        }
+    }
+}
+
+/* Trace information */
+void TraceInformation(char operation,
+                      ForkNumber forkNum, BlockNumber blockNum,
+                      Oid spcNode, Oid dbNode, Oid relNode){
+    char trace_string[128];
+
+    if(block_trace_fp == NULL){
+        block_trace_fp = fopen("trace.txt", "a");
+    }
+
+    sprintf(trace_string, "%c %d %d %u %u %u\n",
+            operation, forkNum, blockNum, spcNode, dbNode, relNode);
+
+    // Write out trace string
+    fputs(trace_string, block_trace_fp);
+
+    // Flush if needed
+    if(rand() % block_trace_flush_frequency == 0){
+        fflush(block_trace_fp);
+    }
+}
 
 /*
  * Implementation of PrefetchBuffer() for shared buffers.
@@ -890,6 +1020,12 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 											  isExtend,
 											  found);
 
+			/* Trace information */
+			TraceInformation('r', forkNum, blockNum,
+			                 smgr->smgr_rnode.node.spcNode,
+                             smgr->smgr_rnode.node.dbNode,
+                             smgr->smgr_rnode.node.relNode);
+
 			/*
 			 * In RBM_ZERO_AND_LOCK mode the caller expects the page to be
 			 * locked on return.
@@ -1080,6 +1216,12 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 									  isExtend,
 									  found);
 
+    /* Trace information */
+    TraceInformation('r', forkNum, blockNum,
+                        smgr->smgr_rnode.node.spcNode,
+                        smgr->smgr_rnode.node.dbNode,
+                        smgr->smgr_rnode.node.relNode);
+
 	return BufferDescriptorGetBuffer(bufHdr);
 }
 
@@ -1266,6 +1408,12 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 														 smgr->smgr_rnode.node.spcNode,
 														 smgr->smgr_rnode.node.dbNode,
 														 smgr->smgr_rnode.node.relNode);
+
+                /* Trace information */
+                TraceInformation('w', forkNum, blockNum,
+                                 smgr->smgr_rnode.node.spcNode,
+                                 smgr->smgr_rnode.node.dbNode,
+                                 smgr->smgr_rnode.node.relNode);
 			}
 			else
 			{
@@ -1603,6 +1751,9 @@ MarkBufferDirty(Buffer buffer)
 										   buf_state))
 			break;
 	}
+
+    /* Trace information */
+    TraceInformation('w', bufHdr->tag.forkNum, bufHdr->tag.blockNum, 101010, 101011, 101011);
 
 	/*
 	 * If the buffer was not dirty already, do vacuum accounting.
@@ -2924,6 +3075,9 @@ FlushBuffer(BufferDesc *buf, SMgrRelation reln)
 									   reln->smgr_rnode.node.dbNode,
 									   reln->smgr_rnode.node.relNode);
 
+    /* Trace information */
+    TraceInformation('f', buf->tag.forkNum, buf->tag.blockNum, 101020, 101021, 101022);
+
 	/* Pop the error context stack */
 	error_context_stack = errcallback.previous;
 }
@@ -3428,36 +3582,6 @@ DropDatabaseBuffers(Oid dbid)
 	}
 }
 
-/* -----------------------------------------------------------------
- *		PrintBufferDescs
- *
- *		this function prints all the buffer descriptors, for debugging
- *		use only.
- * -----------------------------------------------------------------
- */
-#ifdef NOT_USED
-void
-PrintBufferDescs(void)
-{
-	int			i;
-
-	for (i = 0; i < NBuffers; ++i)
-	{
-		BufferDesc *buf = GetBufferDescriptor(i);
-		Buffer		b = BufferDescriptorGetBuffer(buf);
-
-		/* theoretically we should lock the bufhdr here */
-		elog(LOG,
-			 "[%02d] (freeNext=%d, rel=%s, "
-			 "blockNum=%u, flags=0x%x, refcount=%u %d)",
-			 i, buf->freeNext,
-			 relpathbackend(buf->tag.rnode, InvalidBackendId, buf->tag.forkNum),
-			 buf->tag.blockNum, buf->flags,
-			 buf->refcount, GetPrivateRefCount(b));
-	}
-}
-#endif
-
 #ifdef NOT_USED
 void
 PrintPinnedBufs(void)
@@ -3537,6 +3661,9 @@ FlushRelationBuffers(Relation rel)
 						  bufHdr->tag.blockNum,
 						  localpage,
 						  false);
+
+                /* Trace information */
+			    TraceInformation('f', bufHdr->tag.forkNum, bufHdr->tag.blockNum, 101030, 101031, 101032);
 
 				buf_state &= ~(BM_DIRTY | BM_JUST_DIRTIED);
 				pg_atomic_unlocked_write_u32(&bufHdr->state, buf_state);

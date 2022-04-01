@@ -245,6 +245,10 @@ extern void AtProcExit_LocalBuffers(void);
 
 extern void TestForOldSnapshot_impl(Snapshot snapshot, Relation relation);
 
+extern void TraceInformation(char operation,
+                             ForkNumber forkNum, BlockNumber blockNum,
+                             Oid spcNode, Oid dbNode, Oid relNode);
+
 /* in freelist.c */
 extern BufferAccessStrategy GetAccessStrategy(BufferAccessStrategyType btype);
 extern void FreeAccessStrategy(BufferAccessStrategy strategy);

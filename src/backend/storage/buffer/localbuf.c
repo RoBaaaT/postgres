@@ -226,6 +226,9 @@ LocalBufferAlloc(SMgrRelation smgr, ForkNumber forkNum, BlockNumber blockNum,
 				  localpage,
 				  false);
 
+        /* Trace information */
+        TraceInformation('w', bufHdr->tag.forkNum, bufHdr->tag.blockNum, 101040, 101041, 101042);
+
 		/* Mark not-dirty now in case we error out below */
 		buf_state &= ~BM_DIRTY;
 		pg_atomic_unlocked_write_u32(&bufHdr->state, buf_state);

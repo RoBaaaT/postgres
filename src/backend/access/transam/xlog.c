@@ -2072,6 +2072,9 @@ XLogCheckpointNeeded(XLogSegNo new_segno)
 	return false;
 }
 
+int xlog_fork_num = 50;
+int xlog_npages = 0;
+
 /*
  * Write and/or fsync the log at least as far as WriteRqst indicates.
  *
@@ -2179,6 +2182,9 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 											wal_segment_size);
 		}
 		npages++;
+        xlog_npages++;
+        TraceInformation('w', xlog_fork_num, startidx + xlog_npages, 101030, 101031, 101032);
+        TraceInformation('f', xlog_fork_num, startidx + xlog_npages, 101030, 101031, 101032);
 
 		/*
 		 * Dump the set if this will be the last loop iteration, or if we are
